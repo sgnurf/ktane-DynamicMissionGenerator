@@ -6,7 +6,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
-
 using Newtonsoft.Json;
 
 using UnityEngine;
@@ -51,7 +50,7 @@ namespace DynamicMissionGeneratorAssembly
 				(?:time:)?(?<Time1>\d{1,9}):(?<Time2>\d{1,9})(?::(?<Time3>\d{1,9}))?(?!\S)|
 				(?<Strikes>\d{1,9})X(?!\S)|
 				(?<Setting>strikes|needyactivationtime|widgets|nopacing|frontonly|factory|ruleseed)(?::(?<Value>[^\s)]*))?|
-				(?:(?<Count>\d{1,9})\s*[;*]\s*)?
+				(?:(?<Count>\d{1,9})(?<NoDuplicate>!)?\s*[;*]\s*)?
 				(?:
 					(?<Open>\()|
 					(?<ID>(?:[^\s'"",+)]|(?<q>['""])(?:(?!\k<q>)[\s\S])*(?:\k<q>|(?<Error>))|[,+]\s*)+)  # Module pool; ',' or '+' may be followed by spaces; 'Error' group catches unclosed quotes
@@ -657,11 +656,6 @@ namespace DynamicMissionGeneratorAssembly
 			var currentBombModuleProfiles = new List<string>();
 			var matches = tokenRegex.Matches(text);
 
-			var allSolvableModules = new HashSet<string>((IEnumerable<string>) DynamicMissionGenerator.ModSelectorApi?["AllSolvableModules"] ?? new string[0]);
-			var allNeedyModules = new HashSet<string>((IEnumerable<string>) DynamicMissionGenerator.ModSelectorApi?["AllNeedyModules"] ?? new string[0]);
-			var enabledSolvableModules = new HashSet<string>(allSolvableModules.Except((IEnumerable<string>) DynamicMissionGenerator.ModSelectorApi?["DisabledSolvableModules"] ?? new string[0]));
-			var enabledNeedyModules = new HashSet<string>(allNeedyModules.Except((IEnumerable<string>) DynamicMissionGenerator.ModSelectorApi?["DisabledNeedyModules"] ?? new string[0]));
-
 			KMGeneratorSetting currentBomb = null;
 			List<KMGeneratorSetting> bombs = null;
 
@@ -811,124 +805,27 @@ namespace DynamicMissionGeneratorAssembly
 						}
 					}
 
-					KMComponentPool pool = new KMComponentPool
-					{
-						Count = match.Groups["Count"].Success ? int.Parse(match.Groups["Count"].Value) : 1,
-						ComponentTypes = new List<KMComponentPool.ComponentTypeEnum>(),
-						ModTypes = new List<string>()
-					};
-					if (pool.Count <= 0) messages.Add("Invalid module pool count");
+					string moduleList = FixModuleID(match.Groups["ID"].Value);
+					int moduleCount = match.Groups["Count"].Success ? int.Parse(match.Groups["Count"].Value) : 1;
+					bool noDuplicates = match.Groups["NoDuplicate"].Success;
 
-					bool allSolvable = true;
-					string profileName = null;
-					string list = FixModuleID(match.Groups["ID"].Value);
-					switch (list)
-					{
-						case "ALL_SOLVABLE":
-							anySolvableModules = true;
-							pool.AllowedSources = KMComponentPool.ComponentSource.Base | KMComponentPool.ComponentSource.Mods;
-							pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_SOLVABLE;
-							break;
-						case "ALL_NEEDY":
-							pool.AllowedSources = KMComponentPool.ComponentSource.Base | KMComponentPool.ComponentSource.Mods;
-							pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_NEEDY;
-							break;
-						case "ALL_VANILLA":
-							anySolvableModules = true;
-							pool.AllowedSources = KMComponentPool.ComponentSource.Base;
-							pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_SOLVABLE;
-							break;
-						case "ALL_MODS":
-							anySolvableModules = true;
-							pool.AllowedSources = KMComponentPool.ComponentSource.Mods;
-							pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_SOLVABLE;
-							break;
-						case "ALL_VANILLA_NEEDY":
-							pool.AllowedSources = KMComponentPool.ComponentSource.Base;
-							pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_NEEDY;
-							break;
-						case "ALL_MODS_NEEDY":
-							pool.AllowedSources = KMComponentPool.ComponentSource.Mods;
-							pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_NEEDY;
-							break;
-						default:
-							bool useProfile = list.StartsWith("profile:", StringComparison.InvariantCultureIgnoreCase);
-							bool useNeedyProfile = !useProfile && list.StartsWith("needyprofile:", StringComparison.InvariantCultureIgnoreCase);
+					if (moduleCount <= 0)
+						messages.Add("Invalid module pool count");
 
-							if (useProfile || useNeedyProfile)
-							{
-								profileName = list.Substring(useNeedyProfile ? 13 : 8);
-								if (!profiles.TryGetValue(profileName, out var profile))
-								{
-									messages.Add($"No profile named '{profileName}' was found.");
-								}
-								else
-								{
-									Debug.Log("[Dynamic Mission Generator] Disabled list: " + string.Join(", ", profile.DisabledList.ToArray()));
-									pool.ModTypes.AddRange((useNeedyProfile ? enabledNeedyModules : enabledSolvableModules).Except(profile.DisabledList));
-									if (pool.ModTypes.Count == 0)
-									{
-										messages.Add($"Profile '{profileName}' enables no valid modules.");
-										allSolvable = false;
-									}
-									else
-									{
-										allSolvable = useProfile;
-									}
-								}
-							}
-							else
-							{
-								foreach (string id in list.Split(',', '+').Select(s => s.Trim()))
-								{
-									switch (id)
-									{
-										case "WireSequence": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.WireSequence); break;
-										case "Wires": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.Wires); break;
-										case "WhosOnFirst": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.WhosOnFirst); break;
-										case "Simon": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.Simon); break;
-										case "Password": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.Password); break;
-										case "Morse": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.Morse); break;
-										case "Memory": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.Memory); break;
-										case "Maze": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.Maze); break;
-										case "Keypad": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.Keypad); break;
-										case "Venn": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.Venn); break;
-										case "BigButton": pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.BigButton); break;
-										case "NeedyCapacitor":
-											allSolvable = false;
-											pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.NeedyCapacitor);
-											break;
-										case "NeedyVentGas":
-											allSolvable = false;
-											pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.NeedyVentGas);
-											break;
-										case "NeedyKnob":
-											allSolvable = false;
-											pool.ComponentTypes.Add(KMComponentPool.ComponentTypeEnum.NeedyKnob);
-											break;
-										default:
-											if (!allSolvableModules.Contains(id) && !allNeedyModules.Contains(id))
-												messages.Add($"'{id}' is an unknown module ID.");
-											else if (!enabledSolvableModules.Contains(id) && !enabledNeedyModules.Contains(id))
-												messages.Add($"'{id}' is disabled.");
-											else
-											{
-												allSolvable = allSolvable && allSolvableModules.Contains(id);
-												pool.ModTypes.Add(id);
-											}
-											break;
-									}
-								}
-							}
-							break;
+					bool poolHasSolvableModules;
+
+					if (noDuplicates)
+					{
+						IList<KMComponentPool> individualPools = CreateIndividualPools(moduleList, moduleCount, messages, currentBombModuleProfiles, out poolHasSolvableModules);
+						pools.AddRange(individualPools);
 					}
-					if (allSolvable) anySolvableModules = true;
-					if (pool.ModTypes.Count == 0)
-						pool.ModTypes = null;
-					if (pool.ComponentTypes.Count == 0)
-						pool.ComponentTypes = null;
-					pools.Add(pool);
-					for (int i = 0; i < pool.Count; ++i) currentBombModuleProfiles.Add(profileName);
+					else
+					{
+						KMComponentPool pool = CreateRegularPool(moduleList, moduleCount, messages, currentBombModuleProfiles, out poolHasSolvableModules);
+						pools.Add(pool);
+					}
+
+					anySolvableModules = anySolvableModules || poolHasSolvableModules;
 				}
 				else if (match.Groups["Open"].Success)
 				{
@@ -998,6 +895,250 @@ namespace DynamicMissionGeneratorAssembly
 			mission.DisplayName = "Custom Freeplay";
 			DynamicMissionGeneratorApi.Instance.ModuleProfiles = moduleProfiles.AsReadOnly();
 			return true;
+		}
+
+		private KMComponentPool CreateRegularPool(string moduleList, int moduleCount, List<string> messages, List<string> currentBombModuleProfiles, out bool hasAnySolvableModules)
+		{
+			var allSolvableModules = new HashSet<string>((IEnumerable<string>)DynamicMissionGenerator.ModSelectorApi?["AllSolvableModules"] ?? new string[0]);
+			var allNeedyModules = new HashSet<string>((IEnumerable<string>)DynamicMissionGenerator.ModSelectorApi?["AllNeedyModules"] ?? new string[0]);
+			var enabledSolvableModules = new HashSet<string>(allSolvableModules.Except((IEnumerable<string>)DynamicMissionGenerator.ModSelectorApi?["DisabledSolvableModules"] ?? new string[0]));
+			var enabledNeedyModules = new HashSet<string>(allNeedyModules.Except((IEnumerable<string>)DynamicMissionGenerator.ModSelectorApi?["DisabledNeedyModules"] ?? new string[0]));
+
+			hasAnySolvableModules = false;
+			string profileName = null;
+
+			KMComponentPool pool = new KMComponentPool
+			{
+				Count = moduleCount,
+				ComponentTypes = new List<KMComponentPool.ComponentTypeEnum>(),
+				ModTypes = new List<string>()
+			};
+
+			switch (moduleList)
+			{
+				case "ALL_SOLVABLE":
+					hasAnySolvableModules = true;
+					pool.AllowedSources = KMComponentPool.ComponentSource.Base | KMComponentPool.ComponentSource.Mods;
+					pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_SOLVABLE;
+					break;
+				case "ALL_NEEDY":
+					pool.AllowedSources = KMComponentPool.ComponentSource.Base | KMComponentPool.ComponentSource.Mods;
+					pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_NEEDY;
+					break;
+				case "ALL_VANILLA":
+					hasAnySolvableModules = true;
+					pool.AllowedSources = KMComponentPool.ComponentSource.Base;
+					pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_SOLVABLE;
+					break;
+				case "ALL_MODS":
+					hasAnySolvableModules = true;
+					pool.AllowedSources = KMComponentPool.ComponentSource.Mods;
+					pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_SOLVABLE;
+					break;
+				case "ALL_VANILLA_NEEDY":
+					pool.AllowedSources = KMComponentPool.ComponentSource.Base;
+					pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_NEEDY;
+					break;
+				case "ALL_MODS_NEEDY":
+					pool.AllowedSources = KMComponentPool.ComponentSource.Mods;
+					pool.SpecialComponentType = KMComponentPool.SpecialComponentTypeEnum.ALL_NEEDY;
+					break;
+				default:
+					bool useProfile = moduleList.StartsWith("profile:", StringComparison.InvariantCultureIgnoreCase);
+					bool useNeedyProfile = !useProfile && moduleList.StartsWith("needyprofile:", StringComparison.InvariantCultureIgnoreCase);
+
+					if (useProfile || useNeedyProfile)
+					{
+						profileName = moduleList.Substring(useNeedyProfile ? 13 : 8);
+						if (!profiles.TryGetValue(profileName, out var profile))
+						{
+							messages.Add($"No profile named '{profileName}' was found.");
+						}
+						else
+						{
+							currentBombModuleProfiles.Add(profileName);
+							Debug.Log("[Dynamic Mission Generator] Disabled list: " + string.Join(", ", profile.DisabledList.ToArray()));
+							pool.ModTypes.AddRange((useNeedyProfile ? enabledNeedyModules : enabledSolvableModules).Except(profile.DisabledList));
+							if (pool.ModTypes.Count == 0)
+							{
+								messages.Add($"Profile '{profileName}' enables no valid modules.");
+							}
+							else
+							{
+								hasAnySolvableModules = hasAnySolvableModules || useProfile;
+							}
+						}
+					}
+					else
+					{
+						foreach (string id in moduleList.Split(',', '+').Select(s => s.Trim()))
+						{
+							if(VanillaModulesHelper.VanillaSolvableModules.Contains(id))
+							{
+								hasAnySolvableModules = true;
+								pool.ComponentTypes.Add(VanillaModulesHelper.VanillaModuleNameToEnumMap[id]);
+							}
+							else if (VanillaModulesHelper.VanillaNeedyModules.Contains(id))
+							{
+								pool.ComponentTypes.Add(VanillaModulesHelper.VanillaModuleNameToEnumMap[id]);
+							}
+							else if (!allSolvableModules.Contains(id) && !allNeedyModules.Contains(id))
+								messages.Add($"'{id}' is an unknown module ID.");
+							else if (!enabledSolvableModules.Contains(id) && !enabledNeedyModules.Contains(id))
+								messages.Add($"'{id}' is disabled.");
+							else
+							{
+								hasAnySolvableModules = hasAnySolvableModules || allSolvableModules.Contains(id);
+								pool.ModTypes.Add(id);
+							}
+						}
+					}
+					break;
+			}
+			
+			if (pool.ModTypes.Count == 0)
+				pool.ModTypes = null;
+			
+			if (pool.ComponentTypes.Count == 0)
+				pool.ComponentTypes = null;
+			
+			return pool;
+		}
+
+		private IList<KMComponentPool> CreateIndividualPools(string moduleList, int poolCount, List<string> messages, List<string> currentBombModuleProfiles, out bool hasAnySolvableModules)
+		{
+			var modDisabledSolvableModules = (IEnumerable<string>)DynamicMissionGenerator.ModSelectorApi?["DisabledSolvableModules"] ?? new string[0];
+			var modDisabledNeedyModules = (IEnumerable<string>)DynamicMissionGenerator.ModSelectorApi?["DisabledNeedyModules"] ?? new string[0];
+
+			var modEnabledSolvableModules = ((IEnumerable<string>)DynamicMissionGenerator.ModSelectorApi?["AllSolvableModules"] ?? new string[0]).Except(modDisabledSolvableModules);
+			var modEnableNeedyModules = ((IEnumerable<string>)DynamicMissionGenerator.ModSelectorApi?["AllNeedyModules"] ?? new string[0]).Except(modDisabledNeedyModules);
+			
+			var allEnabledSolvableModules = modEnabledSolvableModules.Concat(VanillaModulesHelper.VanillaSolvableModules);
+			var allEnabledNeedyModules = modEnableNeedyModules.Concat(VanillaModulesHelper.VanillaNeedyModules);
+
+			hasAnySolvableModules = false;
+			string profileName = null;
+
+			IEnumerable<string> moduleIds;
+
+			switch (moduleList)
+			{
+				case "ALL_SOLVABLE":
+					hasAnySolvableModules = true;
+					moduleIds = allEnabledSolvableModules;
+					break;
+				case "ALL_NEEDY":
+					moduleIds = allEnabledNeedyModules;
+					break;
+				case "ALL_VANILLA":
+					hasAnySolvableModules = true;
+					moduleIds = VanillaModulesHelper.VanillaSolvableModules;
+					break;
+				case "ALL_MODS":
+					hasAnySolvableModules = true;
+					moduleIds = modEnabledSolvableModules;
+					break;
+				case "ALL_VANILLA_NEEDY":
+					moduleIds = VanillaModulesHelper.VanillaNeedyModules;
+					break;
+				case "ALL_MODS_NEEDY":
+					moduleIds = modEnableNeedyModules;
+					break;
+				default:
+					bool useProfile = moduleList.StartsWith("profile:", StringComparison.InvariantCultureIgnoreCase);
+					bool useNeedyProfile = !useProfile && moduleList.StartsWith("needyprofile:", StringComparison.InvariantCultureIgnoreCase);
+
+					if (useProfile || useNeedyProfile)
+					{
+						profileName = moduleList.Substring(useNeedyProfile ? 13 : 8);
+						if (!profiles.TryGetValue(profileName, out var profile))
+						{
+							messages.Add($"No profile named '{profileName}' was found.");
+							moduleIds = new List<string>(0);
+						}
+						else
+						{
+							currentBombModuleProfiles.Add(profileName);
+							Debug.Log("[Dynamic Mission Generator] Disabled list: " + string.Join(", ", profile.DisabledList.ToArray()));
+							moduleIds = (useNeedyProfile
+								? modEnableNeedyModules
+								: modEnabledSolvableModules).Except(profile.DisabledList);
+
+							if (moduleIds.Count() == 0)
+							{
+								messages.Add($"Profile '{profileName}' enables no valid modules.");
+							}
+							else
+							{
+								hasAnySolvableModules = hasAnySolvableModules || useProfile;
+							}
+						}
+					}
+					else
+					{
+						List<string> curatedModdedIds = new List<string>();
+
+						foreach (string id in moduleList.Split(',', '+').Select(s => s.Trim()))
+						{
+							if (VanillaModulesHelper.VanillaSolvableModules.Contains(id))
+							{
+								hasAnySolvableModules = true;
+								curatedModdedIds.Add(id);
+							}
+							else if (VanillaModulesHelper.VanillaNeedyModules.Contains(id))
+							{
+								curatedModdedIds.Add(id);
+							}
+							else if (modDisabledSolvableModules.Contains(id) || allEnabledNeedyModules.Contains(id))
+							{
+								messages.Add($"'{id}' is disabled.");
+							}
+							else if (!modEnabledSolvableModules.Contains(id) && !modDisabledNeedyModules.Contains(id))
+							{
+								messages.Add($"'{id}' is an unknown module ID.");
+							}
+							else
+							{
+								curatedModdedIds.Add(id);
+								hasAnySolvableModules = hasAnySolvableModules || modEnabledSolvableModules.Contains(id);
+							}
+						}
+
+						moduleIds = curatedModdedIds;
+					}
+					break;
+			}
+
+			int moduleFoundCount = moduleIds.Count();
+			if (moduleFoundCount == 0)
+			{
+				messages.Add($"No valid modules found");
+			}
+			else if (moduleFoundCount < poolCount)
+			{
+				messages.Add($"Requested {poolCount} unique modules but only found {moduleFoundCount} valid modules");
+			}
+
+			IEnumerable<string> selectedUniqueModuleIds = moduleIds.OrderBy(_ => UnityEngine.Random.value).Take(poolCount);
+			IList<KMComponentPool> pools = new List<KMComponentPool>(poolCount);
+
+			foreach (string moduleId in selectedUniqueModuleIds)
+			{
+				KMComponentPool pool = new KMComponentPool { Count = 1 };
+
+				if(VanillaModulesHelper.VanillaModuleNameToEnumMap.ContainsKey(moduleId))
+				{
+					pool.ComponentTypes = new List<KMComponentPool.ComponentTypeEnum>() { VanillaModulesHelper.VanillaModuleNameToEnumMap[moduleId] };
+				}
+				else
+				{
+					pool.ModTypes = new List<string> { moduleId };
+				}
+
+				pools.Add(pool);
+			}
+
+			return pools;
 		}
 
 		private int GetMaxModules()
